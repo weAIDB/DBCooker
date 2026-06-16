@@ -6,6 +6,7 @@
 
 import logging
 from enum import Enum
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,16 @@ class LLMProvider(Enum):
 class LLMClient:
     """Main LLM client that supports multiple providers."""
 
+    @staticmethod
+    def _is_openai_compat_base_url(base_url: str | None) -> bool:
+        if not base_url:
+            return False
+        try:
+            path = urlparse(base_url).path.rstrip("/")
+        except Exception:
+            path = str(base_url).rstrip("/")
+        return path.endswith("/v1")
+
     def __init__(self, model_config: ModelConfig) -> None:
         self.provider: LLMProvider = LLMProvider(model_config.model_provider.provider)
         self.model_config: ModelConfig = model_config
@@ -80,9 +91,14 @@ class LLMClient:
 
                 self.client = OpenRouterClient(model_config)
             case LLMProvider.OLLAMA:
-                from .ollama_client import OllamaClient
+                if self._is_openai_compat_base_url(model_config.model_provider.base_url):
+                    from .openai_compat_client import OpenAICompatClient
 
-                self.client = OllamaClient(model_config)
+                    self.client = OpenAICompatClient(model_config, "ollama")
+                else:
+                    from .ollama_client import OllamaClient
+
+                    self.client = OllamaClient(model_config)
             case (
                 LLMProvider.DOUBAO
                 | LLMProvider.DEEPSEEK

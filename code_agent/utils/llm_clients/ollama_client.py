@@ -14,14 +14,8 @@ except ImportError:
     def override(func):
         return func
 
-import openai
 from ollama import chat as ollama_chat  # pyright: ignore[reportUnknownVariableType]
-from openai.types.responses import (
-    FunctionToolParam,
-    ResponseFunctionToolCallParam,
-    ResponseInputParam,
-)
-from openai.types.responses.response_input_param import FunctionCallOutput
+from openai.types.responses import FunctionToolParam
 
 from code_agent.tools.base import Tool, ToolCall, ToolResult
 from code_agent.utils.config import ModelConfig
@@ -34,15 +28,7 @@ class OllamaClient(BaseLLMClient):
     def __init__(self, model_config: ModelConfig):
         super().__init__(model_config)
 
-        self.client: openai.OpenAI = openai.OpenAI(
-            # by default ollama doesn't require any api key. It should set to be "ollama".
-            api_key=self.api_key,
-            base_url=model_config.model_provider.base_url
-            if model_config.model_provider.base_url
-            else "http://localhost:11434/v1",
-        )
-
-        self.message_history: ResponseInputParam = []
+        self.message_history: list[dict[str, object]] = []
 
     @override
     def should_retry(self, exc: Exception) -> bool:
@@ -98,7 +84,7 @@ class OllamaClient(BaseLLMClient):
         """
         A rewritten version of ollama chan
         """
-        msgs: ResponseInputParam = self.parse_messages(messages)
+        msgs = self.parse_messages(messages)
 
         tool_schemas = None
         if tools:
@@ -151,9 +137,11 @@ class OllamaClient(BaseLLMClient):
                         id=self._id_generator(),
                     )
                 )
+            self.message_history.append(self._to_ollama_message_dict(response.message))
         else:
             # consider response is not a tool call
             content = str(response.message.content)
+            self.message_history.append({"role": "assistant", "content": content})
 
         llm_response = LLMResponse(
             content=content,
@@ -175,11 +163,11 @@ class OllamaClient(BaseLLMClient):
 
         return llm_response
 
-    def parse_messages(self, messages: list[LLMMessage]) -> ResponseInputParam:
+    def parse_messages(self, messages: list[LLMMessage]) -> list[dict[str, object]]:
         """
         Ollama parse messages should be compatible with openai handling
         """
-        openai_messages: ResponseInputParam = []
+        openai_messages: list[dict[str, object]] = []
         for msg in messages:
             if msg.tool_result:
                 openai_messages.append(self.parse_tool_call_result(msg.tool_result))
@@ -198,31 +186,49 @@ class OllamaClient(BaseLLMClient):
                     raise ValueError(f"Invalid message role: {msg.role}")
         return openai_messages
 
-    def parse_tool_call(self, tool_call: ToolCall) -> ResponseFunctionToolCallParam:
-        """Parse the tool call from the LLM response."""
-        return ResponseFunctionToolCallParam(
-            call_id=tool_call.call_id,
-            name=tool_call.name,
-            arguments=json.dumps(tool_call.arguments),
-            type="function_call",
-        )
+    def parse_tool_call(self, tool_call: ToolCall) -> dict[str, object]:
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "index": 0,
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    },
+                }
+            ],
+        }
 
-    def parse_tool_call_result(self, tool_call_result: ToolResult) -> FunctionCallOutput:
-        """Parse the tool call result from the LLM response."""
+    def parse_tool_call_result(self, tool_call_result: ToolResult) -> dict[str, object]:
         result: str = ""
         if tool_call_result.result:
             result = result + tool_call_result.result + "\n"
         if tool_call_result.error:
+            result += "Tool call failed with error:\n"
             result += tool_call_result.error
         result = result.strip()
-
-        return FunctionCallOutput(
-            call_id=tool_call_result.call_id,
-            id=tool_call_result.id,
-            output=result,
-            type="function_call_output",
-        )
+        return {
+            "role": "tool",
+            "tool_name": tool_call_result.name,
+            "content": result,
+        }
 
     def _id_generator(self) -> str:
         """Generate a random ID string"""
         return str(uuid.uuid4())
+
+    def _to_ollama_message_dict(self, message: object) -> dict[str, object]:
+        if isinstance(message, dict):
+            return message
+        model_dump = getattr(message, "model_dump", None)
+        if callable(model_dump):
+            return model_dump(exclude_none=True)
+        to_dict = getattr(message, "dict", None)
+        if callable(to_dict):
+            return to_dict(exclude_none=True)
+        role = getattr(message, "role", "assistant")
+        content = getattr(message, "content", "")
+        return {"role": role, "content": content}
