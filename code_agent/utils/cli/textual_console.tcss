@@ -74,7 +74,9 @@ ChatLog {
 }
 
 Input, TextArea {
-    height: 5;
+    height: auto;
+    min-height: 1;
+    max-height: 8;
     border: ascii #1a2438;
     background: #0a1020;
     color: #e2e8f0;
