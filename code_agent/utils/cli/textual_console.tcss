@@ -73,19 +73,21 @@ ChatLog {
     display: block;
 }
 
-Input {
-    height: 3;
+Input, TextArea {
+    height: auto;
+    min-height: 1;
+    max-height: 8;
     border: ascii #1a2438;
     background: #0a1020;
     color: #e2e8f0;
     padding: 0 1;
 }
 
-Input:focus {
+Input:focus, TextArea:focus {
     border: ascii #00D4FF;
 }
 
-Input.deny-mode {
+Input.deny-mode, TextArea.deny-mode {
     border: ascii #EF4444;
 }
 

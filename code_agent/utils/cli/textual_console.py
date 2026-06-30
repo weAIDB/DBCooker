@@ -44,7 +44,8 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import Input, Static
+from textual.message import Message
+from textual.widgets import Static, TextArea
 
 from code_agent.agent.agent_basics import AgentExecution, AgentStep, AgentStepState
 from code_agent.session.commands import SLASH_COMMANDS
@@ -948,8 +949,92 @@ class _AnimatedToolCallBlock:
 
 # ── OpenCookApp ─────────────────────────────────────────────────────────────
 
+class Input(TextArea):
+    class Changed(Message):
+        def __init__(self, input: "Input") -> None:
+            super().__init__()
+            self.input = input
+            raw = input.text
+            self.value = raw if "\n" not in raw else ""
+
+        @property
+        def control(self) -> "Input":
+            return self.input
+
+    class Submitted(Message):
+        def __init__(self, input: "Input", value: str) -> None:
+            super().__init__()
+            self.input = input
+            self.value = value
+
+        @property
+        def control(self) -> "Input":
+            return self.input
+
+    @property
+    def value(self) -> str:
+        return self.text
+
+    @value.setter
+    def value(self, value: str) -> None:
+        self.text = str(value or "")
+
+    @property
+    def cursor_position(self) -> int:
+        row, col = self.cursor_location
+        offset = 0
+        for r in range(max(0, min(row, self.document.line_count))):
+            offset += len(self.document.get_line(r)) + 1
+        return offset + col
+
+    @cursor_position.setter
+    def cursor_position(self, position: int) -> None:
+        target = max(0, int(position))
+        remaining = target
+        line_count = max(1, self.document.line_count)
+        for row in range(line_count):
+            line = self.document.get_line(row)
+            if remaining <= len(line):
+                self.move_cursor((row, remaining))
+                return
+            remaining -= len(line) + 1
+        last_row = line_count - 1
+        self.move_cursor((last_row, len(self.document.get_line(last_row))))
+
+    def _on_key(self, event: events.Key) -> None:
+        tui = getattr(self.app, "_tui_console", None)
+        approval_mode = bool(getattr(tui, "_approval_mode", False))
+        deny_reason_mode = bool(getattr(tui, "_deny_reason_mode", False))
+
+        if event.key == "ctrl+c":
+            return
+
+        if event.key == "tab":
+            return
+
+        if (not approval_mode) and event.key == "ctrl+j":
+            event.stop()
+            event.prevent_default()
+            self.insert("\n")
+            return
+
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Submitted(self, self.text))
+            return
+
+        if event.key in ("up", "down"):
+            if approval_mode and not deny_reason_mode:
+                return
+            if (not approval_mode) and self.document.line_count <= 1:
+                return
+
+        super()._on_key(event)
+
 
 class OpenCookApp(App[None]):
+
     """Full-screen Textual TUI with OpenCook brand theme.
 
     Layout: header | VerticalScroll(ChatLog + status + cmd_popup + Input) | footer
@@ -1909,11 +1994,9 @@ class TextualConsole(CLIConsole):
         self._interrupt_time = 0.0
 
         # User message with orange background highlight
-        short = user_input[:200]
         self._write(Text(" "))  # spacer
-        chip = Text()
-        chip.append(f" {short} ", style=f"bold {_SURFACE} on {_ORANGE}")
-        self._write(chip, plain=f"\n> {short[:78]}")
+        chip = Text(user_input, style=f"bold {_SURFACE} on {_ORANGE}", no_wrap=False, overflow="fold")
+        self._write(chip, plain=f"\n> {user_input[:78]}")
         self._write(Text(" "))  # spacer
 
         self._spinning = True
@@ -2163,7 +2246,7 @@ class TextualConsole(CLIConsole):
             parts.append((f"in {t.input_tokens} / out {t.output_tokens}", _DIM))
 
         if width >= 66:
-            parts.append(("Ctrl+C interrupt  o open report  /help", _DIM))
+            parts.append(("Ctrl+C interrupt  Ctrl+J newline  o open report  /help", _DIM))
 
         text = Text(" ")
         for idx, (part_text, part_style) in enumerate(parts):
@@ -2854,9 +2937,9 @@ class TextualConsole(CLIConsole):
             body = Group(left, Text(" "), live_session_title)
 
         if width >= 90:
-            subtitle = Text(" Ctrl+C interrupt  .  o open report  .  /help commands ", style=_DIM)
+            subtitle = Text(" Ctrl+C interrupt  .  Ctrl+J newline  .  o open report  .  /help ", style=_DIM)
         elif width >= 66:
-            subtitle = Text(" Ctrl+C  .  o open report  .  /help ", style=_DIM)
+            subtitle = Text(" Ctrl+C  .  Ctrl+J newline  .  /help ", style=_DIM)
         elif width >= 30:
             subtitle = Text(" Ctrl+C  .  o  .  /help ", style=_DIM)
         else:
